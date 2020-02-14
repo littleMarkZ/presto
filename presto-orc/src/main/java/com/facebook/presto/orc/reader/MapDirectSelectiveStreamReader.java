@@ -18,7 +18,6 @@ import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.TupleDomainFilter.BigintRange;
-import com.facebook.presto.orc.TupleDomainFilter.BigintValues;
 import com.facebook.presto.orc.TupleDomainFilter.BytesRange;
 import com.facebook.presto.orc.TupleDomainFilter.BytesValues;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -51,6 +50,7 @@ import java.util.Optional;
 import static com.facebook.presto.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NOT_NULL;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NULL;
+import static com.facebook.presto.orc.TupleDomainFilterUtils.toBigintValues;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.LENGTH;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
@@ -69,6 +69,7 @@ public class MapDirectSelectiveStreamReader
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(MapDirectSelectiveStreamReader.class).instanceSize();
 
     private final StreamDescriptor streamDescriptor;
+    private final boolean legacyMapSubscript;
     private final boolean nullsAllowed;
     private final boolean nonNullsAllowed;
     private final boolean outputRequired;
@@ -112,11 +113,13 @@ public class MapDirectSelectiveStreamReader
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
             DateTimeZone hiveStorageTimeZone,
+            boolean legacyMapSubscript,
             AggregatedMemoryContext systemMemoryContext)
     {
         checkArgument(filters.keySet().stream().map(Subfield::getPath).allMatch(List::isEmpty), "filters on nested columns are not supported yet");
 
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
+        this.legacyMapSubscript = legacyMapSubscript;
         this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newLocalMemoryContext(MapDirectSelectiveStreamReader.class.getSimpleName());
         this.outputRequired = requireNonNull(outputType, "outputType is null").isPresent();
         this.outputType = outputType.map(MapType.class::cast).orElse(null);
@@ -141,8 +144,8 @@ public class MapDirectSelectiveStreamReader
                         .collect(toImmutableList());
             }
 
-            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), hiveStorageTimeZone, systemMemoryContext.newAggregatedMemoryContext());
-            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, hiveStorageTimeZone, systemMemoryContext.newAggregatedMemoryContext());
+            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext.newAggregatedMemoryContext());
+            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, hiveStorageTimeZone, legacyMapSubscript, systemMemoryContext.newAggregatedMemoryContext());
         }
         else {
             this.keyReader = null;
@@ -175,6 +178,7 @@ public class MapDirectSelectiveStreamReader
                         .map(path -> path.get(0))
                         .map(Subfield.LongSubscript.class::cast)
                         .mapToLong(Subfield.LongSubscript::getIndex)
+                        .distinct()
                         .toArray();
 
                 if (requiredIndices.length == 0) {
@@ -185,7 +189,7 @@ public class MapDirectSelectiveStreamReader
                     return BigintRange.of(requiredIndices[0], requiredIndices[0], false);
                 }
 
-                return BigintValues.of(requiredIndices, false);
+                return toBigintValues(requiredIndices, false);
             }
             case STRING:
             case CHAR:

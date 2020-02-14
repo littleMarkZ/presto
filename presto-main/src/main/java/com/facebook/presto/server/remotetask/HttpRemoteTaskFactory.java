@@ -47,7 +47,6 @@ import org.weakref.jmx.Nested;
 import javax.annotation.PreDestroy;
 import javax.inject.Inject;
 
-import java.util.OptionalInt;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
@@ -84,7 +83,8 @@ public class HttpRemoteTaskFactory
     private final int maxTaskUpdateSizeInBytes;
 
     @Inject
-    public HttpRemoteTaskFactory(QueryManagerConfig config,
+    public HttpRemoteTaskFactory(
+            QueryManagerConfig config,
             TaskManagerConfig taskConfig,
             @ForScheduler HttpClient httpClient,
             LocationFactory locationFactory,
@@ -141,24 +141,25 @@ public class HttpRemoteTaskFactory
     }
 
     @Override
-    public RemoteTask createRemoteTask(Session session,
+    public RemoteTask createRemoteTask(
+            Session session,
             TaskId taskId,
             InternalNode node,
             PlanFragment fragment,
             Multimap<PlanNodeId, Split> initialSplits,
-            OptionalInt totalPartitions,
             OutputBuffers outputBuffers,
             PartitionedSplitCountTracker partitionedSplitCountTracker,
             boolean summarizeTaskInfo,
             TableWriteInfo tableWriteInfo)
     {
-        return new HttpRemoteTask(session,
+        return new HttpRemoteTask(
+                session,
                 taskId,
                 node.getNodeIdentifier(),
+                locationFactory.createLegacyTaskLocation(node, taskId),
                 locationFactory.createTaskLocation(node, taskId),
                 fragment,
                 initialSplits,
-                totalPartitions,
                 outputBuffers,
                 httpClient,
                 executor,

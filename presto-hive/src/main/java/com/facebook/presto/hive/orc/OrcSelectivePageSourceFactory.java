@@ -36,7 +36,6 @@ import com.facebook.presto.orc.OrcReaderOptions;
 import com.facebook.presto.orc.OrcSelectiveRecordReader;
 import com.facebook.presto.orc.StripeMetadataSource;
 import com.facebook.presto.orc.TupleDomainFilter;
-import com.facebook.presto.orc.TupleDomainFilterUtils;
 import com.facebook.presto.orc.TupleDomainOrcPredicate;
 import com.facebook.presto.orc.cache.OrcFileTailSource;
 import com.facebook.presto.spi.ConnectorPageSource;
@@ -106,6 +105,7 @@ import static com.facebook.presto.hive.HiveSessionProperties.getOrcMaxMergeDista
 import static com.facebook.presto.hive.HiveSessionProperties.getOrcMaxReadBlockSize;
 import static com.facebook.presto.hive.HiveSessionProperties.getOrcStreamBufferSize;
 import static com.facebook.presto.hive.HiveSessionProperties.getOrcTinyStripeThreshold;
+import static com.facebook.presto.hive.HiveSessionProperties.isAdaptiveFilterReorderingEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOrcBloomFiltersEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOrcZstdJniDecompressionEnabled;
 import static com.facebook.presto.hive.HiveUtil.getPhysicalHiveColumnHandles;
@@ -137,6 +137,7 @@ public class OrcSelectivePageSourceFactory
     private final OrcFileTailSource orcFileTailSource;
     private final StripeMetadataSource stripeMetadataSource;
     private final FileOpener fileOpener;
+    private final TupleDomainFilterCache tupleDomainFilterCache;
 
     @Inject
     public OrcSelectivePageSourceFactory(
@@ -148,7 +149,8 @@ public class OrcSelectivePageSourceFactory
             FileFormatDataSourceStats stats,
             OrcFileTailSource orcFileTailSource,
             StripeMetadataSource stripeMetadataSource,
-            FileOpener fileOpener)
+            FileOpener fileOpener,
+            TupleDomainFilterCache tupleDomainFilterCache)
     {
         this(
                 typeManager,
@@ -160,7 +162,8 @@ public class OrcSelectivePageSourceFactory
                 config.getDomainCompactionThreshold(),
                 orcFileTailSource,
                 stripeMetadataSource,
-                fileOpener);
+                fileOpener,
+                tupleDomainFilterCache);
     }
 
     public OrcSelectivePageSourceFactory(
@@ -173,7 +176,8 @@ public class OrcSelectivePageSourceFactory
             int domainCompactionThreshold,
             OrcFileTailSource orcFileTailSource,
             StripeMetadataSource stripeMetadataSource,
-            FileOpener fileOpener)
+            FileOpener fileOpener,
+            TupleDomainFilterCache tupleDomainFilterCache)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.functionResolution = requireNonNull(functionResolution, "functionResolution is null");
@@ -185,6 +189,7 @@ public class OrcSelectivePageSourceFactory
         this.orcFileTailSource = requireNonNull(orcFileTailSource, "orcFileTailCache is null");
         this.stripeMetadataSource = requireNonNull(stripeMetadataSource, "stripeMetadataSource is null");
         this.fileOpener = requireNonNull(fileOpener, "fileOpener is null");
+        this.tupleDomainFilterCache = requireNonNull(tupleDomainFilterCache, "tupleDomainFilterCache is null");
     }
 
     @Override
@@ -242,7 +247,8 @@ public class OrcSelectivePageSourceFactory
                 orcFileTailSource,
                 stripeMetadataSource,
                 extraFileInfo,
-                fileOpener));
+                fileOpener,
+                tupleDomainFilterCache));
     }
 
     public static OrcSelectivePageSource createOrcPageSource(
@@ -272,7 +278,8 @@ public class OrcSelectivePageSourceFactory
             OrcFileTailSource orcFileTailSource,
             StripeMetadataSource stripeMetadataSource,
             Optional<byte[]> extraFileInfo,
-            FileOpener fileOpener)
+            FileOpener fileOpener,
+            TupleDomainFilterCache tupleDomainFilterCache)
     {
         checkArgument(domainCompactionThreshold >= 1, "domainCompactionThreshold must be at least 1");
 
@@ -325,7 +332,7 @@ public class OrcSelectivePageSourceFactory
             OrcPredicate orcPredicate = toOrcPredicate(domainPredicate, physicalColumns, mappedCoercers, typeManager, domainCompactionThreshold, orcBloomFiltersEnabled);
 
             Map<String, Integer> columnIndices = ImmutableBiMap.copyOf(columnNames).inverse();
-            Map<Integer, Map<Subfield, TupleDomainFilter>> tupleDomainFilters = toTupleDomainFilters(domainPredicate, columnIndices, mappedCoercers);
+            Map<Integer, Map<Subfield, TupleDomainFilter>> tupleDomainFilters = toTupleDomainFilters(domainPredicate, columnIndices, mappedCoercers, tupleDomainFilterCache);
 
             List<Integer> outputIndices = outputColumns.stream().map(indexMapping::get).collect(toImmutableList());
             Map<Integer, List<Subfield>> requiredSubfields = collectRequiredSubfields(physicalColumns, outputIndices, tupleDomainFilters, remainingPredicate, columnIndices, functionResolution, rowExpressionService, session);
@@ -373,6 +380,7 @@ public class OrcSelectivePageSourceFactory
                     start,
                     length,
                     hiveStorageTimeZone,
+                    session.getSqlFunctionProperties().isLegacyMapSubscript(),
                     systemMemoryUsage,
                     Optional.empty(),
                     INITIAL_BATCH_SIZE);
@@ -541,9 +549,9 @@ public class OrcSelectivePageSourceFactory
         }
     }
 
-    private static Map<Integer, Map<Subfield, TupleDomainFilter>> toTupleDomainFilters(TupleDomain<Subfield> domainPredicate, Map<String, Integer> columnIndices, Map<Integer, HiveCoercer> coercers)
+    private static Map<Integer, Map<Subfield, TupleDomainFilter>> toTupleDomainFilters(TupleDomain<Subfield> domainPredicate, Map<String, Integer> columnIndices, Map<Integer, HiveCoercer> coercers, TupleDomainFilterCache tupleDomainFilterCache)
     {
-        Map<Subfield, TupleDomainFilter> filtersBySubfield = Maps.transformValues(domainPredicate.getDomains().get(), TupleDomainFilterUtils::toFilter);
+        Map<Subfield, TupleDomainFilter> filtersBySubfield = Maps.transformValues(domainPredicate.getDomains().get(), tupleDomainFilterCache::getFilter);
 
         Map<Integer, Map<Subfield, TupleDomainFilter>> filtersByColumn = new HashMap<>();
         for (Map.Entry<Subfield, TupleDomainFilter> entry : filtersBySubfield.entrySet()) {
@@ -594,6 +602,11 @@ public class OrcSelectivePageSourceFactory
                 .ifPresent(filterFunctions::add);
 
         if (TRUE_CONSTANT.equals(filter)) {
+            return filterFunctions.build();
+        }
+
+        if (!isAdaptiveFilterReorderingEnabled(session)) {
+            filterFunctions.add(new FilterFunction(session, determinismEvaluator.isDeterministic(filter), predicateCompiler.compilePredicate(session.getSqlFunctionProperties(), filter).get()));
             return filterFunctions.build();
         }
 

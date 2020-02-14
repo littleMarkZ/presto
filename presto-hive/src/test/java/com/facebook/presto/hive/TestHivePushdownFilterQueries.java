@@ -103,6 +103,9 @@ public class TestHivePushdownFilterQueries
     {
         DistributedQueryRunner queryRunner = HiveQueryRunner.createQueryRunner(getTables(),
                 ImmutableMap.of("experimental.pushdown-subfields-enabled", "true"),
+                // TODO: enable failure detector.  Currently this test has a ton of major GC activity on travis,
+                //  and the failure detector may make the test run longer
+                ImmutableMap.of("failure-detector.enabled", "false"),
                 "sql-standard",
                 ImmutableMap.of("hive.pushdown-filter-enabled", "true"),
                 Optional.empty());
@@ -173,8 +176,8 @@ public class TestHivePushdownFilterQueries
 
         assertQuery(legacyUnnest, "SELECT orderkey, date.day FROM lineitem_ex CROSS JOIN UNNEST(dates) t(date)",
                 "SELECT orderkey, day(shipdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
-                "SELECT orderkey, day(commitdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
-                "SELECT orderkey, day(receiptdate) FROM lineitem WHERE orderkey % 31 <> 0");
+                        "SELECT orderkey, day(commitdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
+                        "SELECT orderkey, day(receiptdate) FROM lineitem WHERE orderkey % 31 <> 0");
     }
 
     @Test
@@ -622,9 +625,11 @@ public class TestHivePushdownFilterQueries
         assertQueryUsingH2Cte("SELECT info.orderkey, info.linenumber FROM lineitem_ex", rewriter);
 
         assertQueryUsingH2Cte("SELECT info.linenumber, info.shipdate.ship_year FROM lineitem_ex WHERE orderkey < 1000", rewriter);
+        assertQueryUsingH2Cte("SELECT info.orderkey FROM lineitem_ex WHERE orderkey = 16515", rewriter);
 
         assertQueryUsingH2Cte("SELECT info.orderkey FROM lineitem_ex WHERE info IS NULL", rewriter);
         assertQueryUsingH2Cte("SELECT info.orderkey FROM lineitem_ex WHERE info IS NOT NULL", rewriter);
+        assertQueryUsingH2Cte("SELECT info.orderkey FROM lineitem_ex WHERE info IS NOT NULL AND orderkey = 16515", rewriter);
 
         assertQueryUsingH2Cte("SELECT info, dates FROM lineitem_ex WHERE info.orderkey % 7 = 0", rewriter);
         assertQueryUsingH2Cte("SELECT info.orderkey, dates FROM lineitem_ex WHERE info.orderkey % 7 = 0", rewriter);
@@ -641,6 +646,9 @@ public class TestHivePushdownFilterQueries
 
         // filter-only struct
         assertQueryUsingH2Cte("SELECT orderkey FROM lineitem_ex WHERE info IS NOT NULL");
+        assertQueryUsingH2Cte("SELECT orderkey FROM lineitem_ex WHERE info IS NOT NULL AND info.orderkey = 16515", rewriter);
+        assertQueryReturnsEmptyResult("SELECT orderkey FROM lineitem_ex WHERE info IS NOT NULL AND info.orderkey = 16515 and info.orderkey = 16516");
+        assertQueryUsingH2Cte("SELECT orderkey FROM lineitem_ex WHERE info IS NOT NULL AND info.orderkey + 1 = 16514", rewriter);
 
         // filters on subfields
         assertQueryUsingH2Cte("SELECT info.orderkey, info.linenumber FROM lineitem_ex WHERE info.linenumber = 2", rewriter);
@@ -723,6 +731,10 @@ public class TestHivePushdownFilterQueries
 
         // filter function on numeric and boolean columns
         assertFilterProject("if(is_returned, linenumber, orderkey) % 5 = 0", "linenumber");
+
+        // filter functions with join predicate pushdown
+        assertQueryReturnsEmptyResult("SELECT * FROM orders o, lineitem_ex l " +
+                "WHERE o.orderkey <> 100 AND cardinality(l.keys) >= 5 AND l.keys[5] <> 1 AND l.keys[5] = o.orderkey");
 
         // filter functions on array columns
         assertFilterProject("keys[1] % 5 = 0", "orderkey");
@@ -823,6 +835,17 @@ public class TestHivePushdownFilterQueries
     {
         assertUpdate("CREATE TABLE test_schema_evolution WITH (partitioned_by = ARRAY['regionkey']) AS SELECT nationkey, regionkey FROM nation", 25);
         assertUpdate("ALTER TABLE test_schema_evolution ADD COLUMN nation_plus_region BIGINT");
+
+        // constant filter function errors
+        assertQueryFails("SELECT * FROM test_schema_evolution WHERE coalesce(nation_plus_region, fail('constant filter error')) is not null", "constant filter error");
+        assertQuerySucceeds("SELECT * FROM test_schema_evolution WHERE nationkey < 0 AND coalesce(nation_plus_region, fail('constant filter error')) is not null");
+        assertQueryFails("SELECT * FROM test_schema_evolution WHERE nationkey % 2 = 0 AND coalesce(nation_plus_region, fail('constant filter error')) is not null", "constant filter error");
+
+        // non-deterministic filter function with constant inputs
+        assertQueryReturnsEmptyResult("SELECT * FROM test_schema_evolution WHERE nation_plus_region * rand() < 0");
+        assertQuery("SELECT nationkey FROM test_schema_evolution WHERE nation_plus_region * rand() IS NULL", "SELECT nationkey FROM nation");
+        assertQuerySucceeds("SELECT nationkey FROM test_schema_evolution WHERE coalesce(nation_plus_region, 1) * rand() < 0.5");
+
         assertUpdate("INSERT INTO test_schema_evolution SELECT nationkey, nationkey + regionkey, regionkey FROM nation", 25);
         assertUpdate("ALTER TABLE test_schema_evolution ADD COLUMN nation_minus_region BIGINT");
         assertUpdate("INSERT INTO test_schema_evolution SELECT nationkey, nationkey + regionkey, nationkey - regionkey, regionkey FROM nation", 25);
@@ -1001,6 +1024,28 @@ public class TestHivePushdownFilterQueries
             assertUpdate("DROP TABLE IF EXISTS test_file_format");
             assertUpdate("DROP TABLE test_file_format_orc");
         }
+    }
+
+    @Test
+    public void testNans()
+    {
+        assertUpdate("CREATE TABLE test_nan (double_value DOUBLE, float_value REAL)");
+        try {
+            assertUpdate("INSERT INTO test_nan VALUES (cast('NaN' as DOUBLE), cast('NaN' as REAL)), ((1, 1)), ((2, 2))", 3);
+            assertQuery("SELECT double_value FROM test_nan WHERE double_value != 1", "SELECT cast('NaN' as DOUBLE) UNION SELECT 2");
+            assertQuery("SELECT float_value FROM test_nan WHERE float_value != 1", "SELECT CAST('NaN' as REAL) UNION SELECT 2");
+            assertQuery("SELECT double_value FROM test_nan WHERE double_value NOT IN (1, 2)", "SELECT CAST('NaN' as DOUBLE)");
+        }
+        finally {
+            assertUpdate("DROP TABLE test_nan");
+        }
+    }
+
+    @Test
+    public void testFilterFunctionsWithOptimization()
+    {
+        assertQuery("SELECT partkey FROM lineitem WHERE orderkey > 10 OR if(json_extract(json_parse('{}'), '$.a') IS NOT NULL, quantity * discount) > 0",
+                "SELECT partkey FROM lineitem WHERE orderkey > 10");
     }
 
     private Path getPartitionDirectory(String tableName, String partitionClause)

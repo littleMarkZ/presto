@@ -35,8 +35,10 @@ import com.facebook.presto.memory.QueryContext;
 import com.facebook.presto.operator.ExchangeClientSupplier;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.facebook.presto.spiller.LocalSpillManager;
 import com.facebook.presto.spiller.NodeSpillConfig;
+import com.facebook.presto.sql.gen.OrderingCompiler;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.google.common.annotations.VisibleForTesting;
@@ -60,13 +62,14 @@ import javax.inject.Inject;
 import java.io.Closeable;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static com.facebook.airlift.concurrent.Threads.threadsNamed;
+import static com.facebook.presto.SystemSessionProperties.getQueryMaxMemoryPerNode;
+import static com.facebook.presto.SystemSessionProperties.getQueryMaxTotalMemoryPerNode;
 import static com.facebook.presto.SystemSessionProperties.resourceOvercommit;
 import static com.facebook.presto.execution.SqlTask.createSqlTask;
 import static com.facebook.presto.memory.LocalMemoryManager.GENERAL_POOL;
@@ -124,7 +127,9 @@ public class SqlTaskManager
             LocalSpillManager localSpillManager,
             ExchangeClientSupplier exchangeClientSupplier,
             NodeSpillConfig nodeSpillConfig,
-            GcMonitor gcMonitor)
+            GcMonitor gcMonitor,
+            BlockEncodingSerde blockEncodingSerde,
+            OrderingCompiler orderingCompiler)
     {
         requireNonNull(nodeInfo, "nodeInfo is null");
         requireNonNull(config, "config is null");
@@ -139,7 +144,14 @@ public class SqlTaskManager
         this.taskManagementExecutor = requireNonNull(taskManagementExecutor, "taskManagementExecutor cannot be null").getExecutor();
         this.driverYieldExecutor = newScheduledThreadPool(config.getTaskYieldThreads(), threadsNamed("task-yield-%s"));
 
-        SqlTaskExecutionFactory sqlTaskExecutionFactory = new SqlTaskExecutionFactory(taskNotificationExecutor, taskExecutor, planner, splitMonitor, config);
+        SqlTaskExecutionFactory sqlTaskExecutionFactory = new SqlTaskExecutionFactory(
+                taskNotificationExecutor,
+                taskExecutor,
+                planner,
+                blockEncodingSerde,
+                orderingCompiler,
+                splitMonitor,
+                config);
 
         this.localMemoryManager = requireNonNull(localMemoryManager, "localMemoryManager is null");
         DataSize maxQueryUserMemoryPerNode = nodeMemoryConfig.getMaxQueryMemoryPerNode();
@@ -147,7 +159,7 @@ public class SqlTaskManager
         DataSize maxQuerySpillPerNode = nodeSpillConfig.getQueryMaxSpillPerNode();
 
         queryContexts = CacheBuilder.newBuilder().weakValues().build(CacheLoader.from(
-                queryId -> createQueryContext(queryId, localMemoryManager, nodeMemoryConfig, localSpillManager, gcMonitor, maxQueryUserMemoryPerNode, maxQueryTotalMemoryPerNode, maxQuerySpillPerNode)));
+                queryId -> createQueryContext(queryId, localMemoryManager, localSpillManager, gcMonitor, maxQueryUserMemoryPerNode, maxQueryTotalMemoryPerNode, maxQuerySpillPerNode)));
 
         tasks = CacheBuilder.newBuilder().build(CacheLoader.from(
                 taskId -> createSqlTask(
@@ -169,7 +181,6 @@ public class SqlTaskManager
     private QueryContext createQueryContext(
             QueryId queryId,
             LocalMemoryManager localMemoryManager,
-            NodeMemoryConfig nodeMemoryConfig,
             LocalSpillManager localSpillManager,
             GcMonitor gcMonitor,
             DataSize maxQueryUserMemoryPerNode,
@@ -355,7 +366,6 @@ public class SqlTaskManager
             Optional<PlanFragment> fragment,
             List<TaskSource> sources,
             OutputBuffers outputBuffers,
-            OptionalInt totalPartitions,
             Optional<TableWriteInfo> tableWriteInfo)
     {
         requireNonNull(session, "session is null");
@@ -368,10 +378,16 @@ public class SqlTaskManager
             // TODO: This should have been done when the QueryContext was created. However, the session isn't available at that point.
             queryContexts.getUnchecked(taskId.getQueryId()).setResourceOvercommit();
         }
+        else {
+            queryContexts.getUnchecked(
+                    taskId.getQueryId()).setMemoryLimits(
+                    getQueryMaxMemoryPerNode(session),
+                    getQueryMaxTotalMemoryPerNode(session));
+        }
 
         SqlTask sqlTask = tasks.getUnchecked(taskId);
         sqlTask.recordHeartbeat();
-        return sqlTask.updateTask(session, fragment, sources, outputBuffers, totalPartitions, tableWriteInfo);
+        return sqlTask.updateTask(session, fragment, sources, outputBuffers, tableWriteInfo);
     }
 
     @Override

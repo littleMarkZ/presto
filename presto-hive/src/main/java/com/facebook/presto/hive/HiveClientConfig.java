@@ -49,6 +49,8 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
         "hive.optimized-reader.enabled"})
 public class HiveClientConfig
 {
+    private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
+
     private String timeZone = TimeZone.getDefault().getID();
 
     private DataSize maxSplitSize = new DataSize(64, MEGABYTE);
@@ -152,7 +154,12 @@ public class HiveClientConfig
 
     private boolean pushdownFilterEnabled;
     private boolean rangeFiltersOnSubscriptsEnabled;
+    private boolean adaptiveFilterReorderingEnabled = true;
     private boolean zstdJniDecompressionEnabled;
+
+    private Duration fileStatusCacheExpireAfterWrite = new Duration(0, TimeUnit.SECONDS);
+    private long fileStatusCacheMaxSize;
+    private List<String> fileStatusCacheTables = ImmutableList.of();
 
     public int getMaxInitialSplits()
     {
@@ -873,6 +880,42 @@ public class HiveClientConfig
         return this;
     }
 
+    public List<String> getFileStatusCacheTables()
+    {
+        return fileStatusCacheTables;
+    }
+
+    @Config("hive.file-status-cache-tables")
+    public HiveClientConfig setFileStatusCacheTables(String fileStatusCacheTables)
+    {
+        this.fileStatusCacheTables = SPLITTER.splitToList(fileStatusCacheTables);
+        return this;
+    }
+
+    public long getFileStatusCacheMaxSize()
+    {
+        return fileStatusCacheMaxSize;
+    }
+
+    @Config("hive.file-status-cache-size")
+    public HiveClientConfig setFileStatusCacheMaxSize(long fileStatusCacheMaxSize)
+    {
+        this.fileStatusCacheMaxSize = fileStatusCacheMaxSize;
+        return this;
+    }
+
+    public Duration getFileStatusCacheExpireAfterWrite()
+    {
+        return fileStatusCacheExpireAfterWrite;
+    }
+
+    @Config("hive.file-status-cache-expire-time")
+    public HiveClientConfig setFileStatusCacheExpireAfterWrite(Duration fileStatusCacheExpireAfterWrite)
+    {
+        this.fileStatusCacheExpireAfterWrite = fileStatusCacheExpireAfterWrite;
+        return this;
+    }
+
     public enum HiveMetastoreAuthenticationType
     {
         NONE,
@@ -1250,6 +1293,19 @@ public class HiveClientConfig
     public HiveClientConfig setRangeFiltersOnSubscriptsEnabled(boolean rangeFiltersOnSubscriptsEnabled)
     {
         this.rangeFiltersOnSubscriptsEnabled = rangeFiltersOnSubscriptsEnabled;
+        return this;
+    }
+
+    public boolean isAdaptiveFilterReorderingEnabled()
+    {
+        return adaptiveFilterReorderingEnabled;
+    }
+
+    @Config("hive.adaptive-filter-reordering-enabled")
+    @ConfigDescription("Experimental: enable adaptive filter reordering")
+    public HiveClientConfig setAdaptiveFilterReorderingEnabled(boolean adaptiveFilterReorderingEnabled)
+    {
+        this.adaptiveFilterReorderingEnabled = adaptiveFilterReorderingEnabled;
         return this;
     }
 }

@@ -18,6 +18,9 @@ import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
 import com.facebook.airlift.stats.GcMonitor;
 import com.facebook.airlift.stats.JmxGcMonitor;
 import com.facebook.airlift.stats.PauseMeter;
+import com.facebook.drift.client.address.AddressSelector;
+import com.facebook.drift.transport.netty.client.DriftNettyClientModule;
+import com.facebook.drift.transport.netty.server.DriftNettyServerModule;
 import com.facebook.presto.GroupByHashPageIndexerFactory;
 import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.SystemSessionProperties;
@@ -89,6 +92,11 @@ import com.facebook.presto.operator.PagesIndex;
 import com.facebook.presto.operator.TableCommitContext;
 import com.facebook.presto.operator.index.IndexJoinLookupStats;
 import com.facebook.presto.server.remotetask.HttpLocationFactory;
+import com.facebook.presto.server.thrift.FixedAddressSelector;
+import com.facebook.presto.server.thrift.ThriftServerInfoClient;
+import com.facebook.presto.server.thrift.ThriftServerInfoService;
+import com.facebook.presto.server.thrift.ThriftTaskClient;
+import com.facebook.presto.server.thrift.ThriftTaskService;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PageSorter;
@@ -143,6 +151,7 @@ import com.facebook.presto.transaction.TransactionManagerConfig;
 import com.facebook.presto.type.TypeDeserializer;
 import com.facebook.presto.type.TypeRegistry;
 import com.facebook.presto.util.FinalizerService;
+import com.facebook.presto.util.GcStatusMonitor;
 import com.facebook.presto.version.EmbedVersion;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
@@ -169,6 +178,8 @@ import static com.facebook.airlift.http.client.HttpClientBinder.httpClientBinder
 import static com.facebook.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static com.facebook.airlift.json.JsonBinder.jsonBinder;
 import static com.facebook.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static com.facebook.drift.client.guice.DriftClientBinder.driftClientBinder;
+import static com.facebook.drift.server.guice.DriftServerBinder.driftServerBinder;
 import static com.facebook.presto.execution.scheduler.NodeSchedulerConfig.NetworkTopologyType.FLAT;
 import static com.facebook.presto.execution.scheduler.NodeSchedulerConfig.NetworkTopologyType.LEGACY;
 import static com.facebook.presto.server.smile.SmileCodecBinder.smileCodecBinder;
@@ -254,6 +265,9 @@ public class ServerMainModule
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                 });
+        driftClientBinder(binder).bindDriftClient(ThriftServerInfoClient.class, ForNodeManager.class)
+                .withAddressSelector(((addressSelectorBinder, annotation, prefix) ->
+                        addressSelectorBinder.bind(AddressSelector.class).annotatedWith(annotation).to(FixedAddressSelector.class)));
 
         // node scheduler
         // TODO: remove from NodePartitioningManager and move to CoordinatorModule
@@ -289,6 +303,7 @@ public class ServerMainModule
         // Add monitoring for JVM pauses
         binder.bind(PauseMeter.class).in(Scopes.SINGLETON);
         newExporter(binder).export(PauseMeter.class).withGeneratedName();
+        binder.bind(GcStatusMonitor.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(MemoryManagerConfig.class);
         configBinder(binder).bindConfig(NodeMemoryConfig.class);
@@ -342,6 +357,10 @@ public class ServerMainModule
                     config.setMaxConnectionsPerServer(250);
                     config.setMaxContentLength(new DataSize(32, MEGABYTE));
                 });
+        binder.install(new DriftNettyClientModule());
+        driftClientBinder(binder).bindDriftClient(ThriftTaskClient.class, ForExchange.class)
+                .withAddressSelector(((addressSelectorBinder, annotation, prefix) ->
+                        addressSelectorBinder.bind(AddressSelector.class).annotatedWith(annotation).to(FixedAddressSelector.class)));
 
         configBinder(binder).bindConfig(ExchangeClientConfig.class);
         binder.bind(ExchangeExecutionMBean.class).in(Scopes.SINGLETON);
@@ -486,6 +505,11 @@ public class ServerMainModule
         binder.bind(LocalSpillManager.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(NodeSpillConfig.class);
 
+        // Thrift RPC
+        binder.install(new DriftNettyServerModule());
+        driftServerBinder(binder).bindService(ThriftTaskService.class);
+        driftServerBinder(binder).bindService(ThriftServerInfoService.class);
+
         // cleanup
         binder.bind(ExecutorCleanup.class).in(Scopes.SINGLETON);
     }
@@ -500,7 +524,7 @@ public class ServerMainModule
 
     @Provides
     @Singleton
-    @ForAsyncHttp
+    @ForAsyncRpc
     public static ExecutorService createAsyncHttpResponseCoreExecutor()
     {
         return newCachedThreadPool(daemonThreadsNamed("async-http-response-%s"));
@@ -508,15 +532,15 @@ public class ServerMainModule
 
     @Provides
     @Singleton
-    @ForAsyncHttp
-    public static BoundedExecutor createAsyncHttpResponseExecutor(@ForAsyncHttp ExecutorService coreExecutor, TaskManagerConfig config)
+    @ForAsyncRpc
+    public static BoundedExecutor createAsyncHttpResponseExecutor(@ForAsyncRpc ExecutorService coreExecutor, TaskManagerConfig config)
     {
         return new BoundedExecutor(coreExecutor, config.getHttpResponseThreads());
     }
 
     @Provides
     @Singleton
-    @ForAsyncHttp
+    @ForAsyncRpc
     public static ScheduledExecutorService createAsyncHttpTimeoutExecutor(TaskManagerConfig config)
     {
         return newScheduledThreadPool(config.getHttpTimeoutThreads(), daemonThreadsNamed("async-http-timeout-%s"));
@@ -529,8 +553,8 @@ public class ServerMainModule
         @Inject
         public ExecutorCleanup(
                 @ForExchange ScheduledExecutorService exchangeExecutor,
-                @ForAsyncHttp ExecutorService httpResponseExecutor,
-                @ForAsyncHttp ScheduledExecutorService httpTimeoutExecutor)
+                @ForAsyncRpc ExecutorService httpResponseExecutor,
+                @ForAsyncRpc ScheduledExecutorService httpTimeoutExecutor)
         {
             executors = ImmutableList.of(
                     exchangeExecutor,

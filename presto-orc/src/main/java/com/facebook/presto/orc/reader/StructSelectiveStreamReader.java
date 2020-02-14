@@ -102,6 +102,7 @@ public class StructSelectiveStreamReader
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
             DateTimeZone hiveStorageTimeZone,
+            boolean legacyMapSubscript,
             AggregatedMemoryContext systemMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
@@ -153,7 +154,7 @@ public class StructSelectiveStreamReader
                 StreamDescriptor nestedStream = nestedStreams.get(i);
                 String fieldName = nestedStream.getFieldName().toLowerCase(Locale.ENGLISH);
                 Optional<Type> fieldOutputType = nestedTypes.isPresent() ? Optional.of(nestedTypes.get().get(i)) : Optional.empty();
-                boolean requiredField = requiredFields.map(names -> names.containsKey(fieldName)).orElse(true);
+                boolean requiredField = requiredFields.map(names -> names.containsKey(fieldName)).orElse(outputRequired);
 
                 if (requiredField || fieldsWithFilters.contains(fieldName)) {
                     Map<Subfield, TupleDomainFilter> nestedFilters = filters.entrySet().stream()
@@ -167,6 +168,7 @@ public class StructSelectiveStreamReader
                             fieldOutputType,
                             nestedRequiredSubfields,
                             hiveStorageTimeZone,
+                            legacyMapSubscript,
                             systemMemoryContext.newAggregatedMemoryContext());
                     nestedReaders.put(fieldName, nestedReader);
                 }

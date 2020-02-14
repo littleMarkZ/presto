@@ -19,9 +19,6 @@ import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.tests.StandaloneQueryRunner;
 import com.facebook.presto.type.TypeRegistry;
 import com.facebook.presto.verifier.checksum.ChecksumValidator;
-import com.facebook.presto.verifier.checksum.FloatingPointColumnValidator;
-import com.facebook.presto.verifier.checksum.OrderableArrayColumnValidator;
-import com.facebook.presto.verifier.checksum.SimpleColumnValidator;
 import com.facebook.presto.verifier.event.DeterminismAnalysisRun;
 import com.facebook.presto.verifier.event.VerifierQueryEvent;
 import com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus;
@@ -35,7 +32,6 @@ import com.facebook.presto.verifier.rewrite.QueryRewriter;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -48,6 +44,7 @@ import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
 import static com.facebook.presto.verifier.VerifierTestUtil.CATALOG;
 import static com.facebook.presto.verifier.VerifierTestUtil.SCHEMA;
+import static com.facebook.presto.verifier.VerifierTestUtil.createChecksumValidator;
 import static com.facebook.presto.verifier.VerifierTestUtil.setupPresto;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.FAILED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SKIPPED;
@@ -59,6 +56,7 @@ import static com.facebook.presto.verifier.framework.DeterminismAnalysis.NON_DET
 import static com.facebook.presto.verifier.framework.SkippedReason.CONTROL_SETUP_QUERY_FAILED;
 import static com.facebook.presto.verifier.framework.SkippedReason.FAILED_BEFORE_CONTROL_QUERY;
 import static com.facebook.presto.verifier.framework.SkippedReason.NON_DETERMINISTIC;
+import static com.facebook.presto.verifier.framework.SkippedReason.VERIFIER_LIMITATION;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 import static java.util.regex.Pattern.DOTALL;
@@ -96,7 +94,7 @@ public class TestDataVerification
         VerificationContext verificationContext = new VerificationContext();
         RetryConfig retryConfig = new RetryConfig();
         PrestoAction prestoAction = new JdbcPrestoAction(
-                new PrestoExceptionClassifier(ImmutableSet.of(), ImmutableSet.of()),
+                PrestoExceptionClassifier.createDefault(),
                 configuration,
                 verificationContext,
                 new PrestoClusterConfig()
@@ -109,10 +107,7 @@ public class TestDataVerification
                 prestoAction,
                 ImmutableList.of(),
                 ImmutableMap.of(CONTROL, QualifiedName.of("tmp_verifier_c"), TEST, QualifiedName.of("tmp_verifier_t")));
-        ChecksumValidator checksumValidator = new ChecksumValidator(
-                new SimpleColumnValidator(),
-                new FloatingPointColumnValidator(verifierConfig),
-                new OrderableArrayColumnValidator());
+        ChecksumValidator checksumValidator = createChecksumValidator(verifierConfig);
         SourceQuery sourceQuery = new SourceQuery(SUITE, NAME, controlQuery, testQuery, configuration, configuration);
         return new DataVerification(
                 (verification, e) -> false,
@@ -262,7 +257,9 @@ public class TestDataVerification
                         "COLUMN MISMATCH\n" +
                         "Control 1 rows, Test 1 rows\n" +
                         "Mismatched Columns:\n" +
-                        "  _col0 \\(array\\(row\\(integer, varchar\\(1\\)\\)\\)\\): control\\(checksum: 71 b5 2f 7f 1e 9b a6 a4\\) test\\(checksum: b4 3c 7d 02 2b 14 77 12\\)\n"));
+                        "  _col0 \\(array\\(row\\(integer, varchar\\(1\\)\\)\\)\\):" +
+                        " control\\(checksum: 71 b5 2f 7f 1e 9b a6 a4, cardinality_sum: 2\\)" +
+                        " test\\(checksum: b4 3c 7d 02 2b 14 77 12, cardinality_sum: 2\\)\n"));
 
         List<DeterminismAnalysisRun> runs = event.get().getDeterminismAnalysisDetails().getRuns();
         assertEquals(runs.size(), 2);
@@ -280,7 +277,8 @@ public class TestDataVerification
         Optional<VerifierQueryEvent> event = createVerification(query, query).run();
 
         assertTrue(event.isPresent());
-        assertEquals(event.get().getStatus(), FAILED.name());
+        assertEquals(event.get().getStatus(), SKIPPED.name());
+        assertEquals(event.get().getSkippedReason(), VERIFIER_LIMITATION.name());
         assertEquals(event.get().getErrorCode(), "PRESTO(COMPILER_ERROR)");
         assertNotNull(event.get().getControlQueryInfo().getChecksumQuery());
         assertNotNull(event.get().getControlQueryInfo().getChecksumQueryId());

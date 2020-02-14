@@ -15,10 +15,12 @@ package com.facebook.presto.orc;
 
 import com.facebook.presto.orc.TupleDomainFilter.BigintMultiRange;
 import com.facebook.presto.orc.TupleDomainFilter.BigintRange;
-import com.facebook.presto.orc.TupleDomainFilter.BigintValues;
+import com.facebook.presto.orc.TupleDomainFilter.BigintValuesUsingBitmask;
+import com.facebook.presto.orc.TupleDomainFilter.BigintValuesUsingHashTable;
 import com.facebook.presto.orc.TupleDomainFilter.BooleanValue;
 import com.facebook.presto.orc.TupleDomainFilter.BytesRange;
 import com.facebook.presto.orc.TupleDomainFilter.BytesValues;
+import com.facebook.presto.orc.TupleDomainFilter.BytesValuesExclusive;
 import com.facebook.presto.orc.TupleDomainFilter.DoubleRange;
 import com.facebook.presto.orc.TupleDomainFilter.FloatRange;
 import com.facebook.presto.orc.TupleDomainFilter.LongDecimalRange;
@@ -34,6 +36,7 @@ import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import java.util.List;
+import java.util.Objects;
 
 import static com.facebook.presto.orc.TupleDomainFilter.ALWAYS_FALSE;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NOT_NULL;
@@ -99,13 +102,14 @@ public class TupleDomainFilterUtils
             return nullAllowed ? IS_NULL : ALWAYS_FALSE;
         }
 
-        if (rangeFilters.get(0) instanceof BigintRange) {
+        TupleDomainFilter firstRangeFilter = rangeFilters.get(0);
+        if (firstRangeFilter instanceof BigintRange) {
             List<BigintRange> bigintRanges = rangeFilters.stream()
                     .map(BigintRange.class::cast)
                     .collect(toImmutableList());
 
             if (bigintRanges.stream().allMatch(BigintRange::isSingleValue)) {
-                return BigintValues.of(
+                return toBigintValues(
                         bigintRanges.stream()
                                 .mapToLong(BigintRange::getLower)
                                 .toArray(),
@@ -115,7 +119,7 @@ public class TupleDomainFilterUtils
             return BigintMultiRange.of(bigintRanges, nullAllowed);
         }
 
-        if (rangeFilters.get(0) instanceof BytesRange) {
+        if (firstRangeFilter instanceof BytesRange) {
             List<BytesRange> bytesRanges = rangeFilters.stream()
                     .map(BytesRange.class::cast)
                     .collect(toImmutableList());
@@ -127,8 +131,64 @@ public class TupleDomainFilterUtils
                                 .toArray(byte[][]::new),
                         nullAllowed);
             }
+
+            if (isNotIn(ranges)) {
+                return BytesValuesExclusive.of(
+                        bytesRanges.stream()
+                                .map(BytesRange::getLower)
+                                .filter(Objects::nonNull)
+                                .toArray(byte[][]::new),
+                        nullAllowed);
+            }
         }
-        return MultiRange.of(rangeFilters, nullAllowed);
+
+        if (firstRangeFilter instanceof DoubleRange || firstRangeFilter instanceof FloatRange) {
+            // != and NOT IN filters should return true when applied to NaN
+            // E.g. NaN != 1.0 as well as NaN NOT IN (1.0, 2.5, 3.6) should return true; otherwise false.
+            boolean nanAllowed = isNotIn(ranges);
+            return MultiRange.of(rangeFilters, nullAllowed, nanAllowed);
+        }
+
+        return MultiRange.of(rangeFilters, nullAllowed, false);
+    }
+
+    /**
+     * Returns true is ranges represent != or NOT IN filter for double, float or string column.
+     *
+     * The logic is to return true if ranges are next to each other, but don't include the touch value.
+     */
+    private static boolean isNotIn(List<Range> ranges)
+    {
+        if (ranges.size() <= 1) {
+            return false;
+        }
+
+        Range firstRange = ranges.get(0);
+        Marker previousHigh = firstRange.getHigh();
+
+        Type type = previousHigh.getType();
+        if (type != DOUBLE && type != REAL && !isVarcharType(type) && !(type instanceof CharType)) {
+            return false;
+        }
+
+        Range lastRange = ranges.get(ranges.size() - 1);
+        if (!firstRange.getLow().isLowerUnbounded() || !lastRange.getHigh().isUpperUnbounded()) {
+            return false;
+        }
+
+        for (int i = 1; i < ranges.size(); i++) {
+            Range current = ranges.get(i);
+
+            if (previousHigh.getBound() != Marker.Bound.BELOW ||
+                    current.getLow().getBound() != Marker.Bound.ABOVE ||
+                    type.compareTo(previousHigh.getValueBlock().get(), 0, current.getLow().getValueBlock().get(), 0) != 0) {
+                return false;
+            }
+
+            previousHigh = current.getHigh();
+        }
+
+        return true;
     }
 
     private static TupleDomainFilter createBooleanFilter(List<Range> ranges, boolean nullAllowed)
@@ -272,5 +332,25 @@ public class TupleDomainFilterUtils
                 low.getBound() == Marker.Bound.ABOVE,
                 upperValue == null ? null : upperValue.getBytes(),
                 high.getBound() == Marker.Bound.BELOW, nullAllowed);
+    }
+
+    public static TupleDomainFilter toBigintValues(long[] values, boolean nullAllowed)
+    {
+        long min = values[0];
+        long max = values[0];
+        for (int i = 1; i < values.length; i++) {
+            min = Math.min(min, values[i]);
+            max = Math.max(max, values[i]);
+        }
+
+        // Filter based on a hash table uses up to 3 longs per value (the value itself + 1 or 2
+        // slots in a hash table), e.g. up to 192 bits per value.
+        // Filter based on a bitmap uses (max - min) / num-values bits per value.
+        // Choose the filter that uses less bits per value.
+        if ((max - min + 1) > Integer.MAX_VALUE || ((max - min + 1) / values.length) > 192) {
+            return BigintValuesUsingHashTable.of(min, max, values, nullAllowed);
+        }
+
+        return BigintValuesUsingBitmask.of(min, max, values, nullAllowed);
     }
 }

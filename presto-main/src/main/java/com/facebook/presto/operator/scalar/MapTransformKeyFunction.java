@@ -36,6 +36,7 @@ import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.FunctionKind;
 import com.facebook.presto.spi.function.QualifiedFunctionName;
 import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
 import com.facebook.presto.spi.type.MapType;
 import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
@@ -102,9 +103,9 @@ public final class MapTransformKeyFunction
     }
 
     @Override
-    public boolean isHidden()
+    public SqlFunctionVisibility getVisibility()
     {
-        return false;
+        return SqlFunctionVisibility.PUBLIC;
     }
 
     @Override
@@ -278,7 +279,8 @@ public final class MapTransformKeyFunction
                         .append(new IfStatement()
                                 .condition(typedSet.invoke("contains", boolean.class, blockBuilder.cast(Block.class), position))
                                 .ifTrue(throwDuplicatedKeyException)
-                                .ifFalse(typedSet.invoke("add", void.class, blockBuilder.cast(Block.class), position)))));
+                                .ifFalse(typedSet.invoke("add", boolean.class, blockBuilder.cast(Block.class), position)
+                                .pop()))));
 
         body.append(mapBlockBuilder
                 .invoke("closeEntry", BlockBuilder.class)

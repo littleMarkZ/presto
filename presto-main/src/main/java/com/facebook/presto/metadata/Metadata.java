@@ -59,7 +59,7 @@ public interface Metadata
 
     Type getType(TypeSignature signature);
 
-    List<SqlFunction> listFunctions();
+    List<SqlFunction> listFunctions(Session session);
 
     void registerBuiltInFunctions(List<? extends BuiltInFunction> functions);
 
@@ -232,6 +232,9 @@ public interface Metadata
 
     Optional<NewTableLayout> getNewTableLayout(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
 
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForNewTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
+
     /**
      * Begin the atomic creation of a table with data.
      */
@@ -243,6 +246,9 @@ public interface Metadata
     Optional<ConnectorOutputMetadata> finishCreateTable(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     Optional<NewTableLayout> getInsertLayout(Session session, TableHandle target);
+
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForInsert(Session session, TableHandle target);
 
     /**
      * Describes statistics that must be collected during a write.

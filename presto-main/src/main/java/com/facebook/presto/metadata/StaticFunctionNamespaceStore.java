@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.facebook.presto.util.PropertiesUtil.loadProperties;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.io.Files.getNameWithoutExtension;
 
 public class StaticFunctionNamespaceStore
 {
@@ -61,14 +62,15 @@ public class StaticFunctionNamespaceStore
     private void loadFunctionNamespaceManager(File file)
             throws Exception
     {
-        log.info("-- Loading function namespace from %s --", file);
+        String catalogName = getNameWithoutExtension(file.getName());
+        log.info("-- Loading function namespace manager from %s --", file);
         Map<String, String> properties = new HashMap<>(loadProperties(file));
+
         String functionNamespaceManagerName = properties.remove("function-namespace-manager.name");
         checkState(functionNamespaceManagerName != null, "Function namespace configuration %s does not contain function-namespace-manager.name", file.getAbsoluteFile());
-        String functionNamespaces = properties.remove("serving-namespaces");
-        checkState(functionNamespaces != null, "Function namespace configuration %s does not contain serving-namespaces", file.getAbsoluteFile());
-        functionManager.loadFunctionNamespaces(functionNamespaceManagerName, SPLITTER.splitToList(functionNamespaces), properties);
-        log.info("-- Added function namespace %s managed by function manager %s --", functionNamespaces, functionNamespaceManagerName);
+
+        functionManager.loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+        log.info("-- Added function namespace manager [%s] --", catalogName);
     }
 
     private static List<File> listFiles(File dir)

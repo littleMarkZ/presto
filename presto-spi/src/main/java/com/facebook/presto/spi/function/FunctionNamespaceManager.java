@@ -23,8 +23,6 @@ import java.util.Optional;
 @Experimental
 public interface FunctionNamespaceManager<F extends SqlFunction>
 {
-    String getName();
-
     /**
      * Start a transaction.
      */
@@ -47,6 +45,12 @@ public interface FunctionNamespaceManager<F extends SqlFunction>
      * TODO: Support transaction
      */
     void createFunction(SqlInvokedFunction function, boolean replace);
+
+    /**
+     * Alter the specified function.
+     * TODO: Support transaction
+     */
+    void alterFunction(QualifiedFunctionName functionName, Optional<List<TypeSignature>> parameterTypes, AlterRoutineCharacteristics alterRoutineCharacteristics);
 
     /**
      * Drop the specified function.

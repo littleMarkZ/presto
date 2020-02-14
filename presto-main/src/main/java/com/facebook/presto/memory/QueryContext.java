@@ -33,7 +33,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -246,12 +245,21 @@ public class QueryContext
         return memoryPool;
     }
 
+    public long getMaxUserMemory()
+    {
+        return maxUserMemory;
+    }
+
+    public long getMaxTotalMemory()
+    {
+        return maxTotalMemory;
+    }
+
     public TaskContext addTaskContext(
             TaskStateMachine taskStateMachine,
             Session session,
             boolean perOperatorCpuTimerEnabled,
             boolean cpuTimerEnabled,
-            OptionalInt totalPartitions,
             boolean legacyLifespanCompletionCondition)
     {
         TaskContext taskContext = TaskContext.createTaskContext(
@@ -264,7 +272,6 @@ public class QueryContext
                 queryMemoryContext.newMemoryTrackingContext(),
                 perOperatorCpuTimerEnabled,
                 cpuTimerEnabled,
-                totalPartitions,
                 legacyLifespanCompletionCondition);
         taskContexts.put(taskStateMachine.getTaskId(), taskContext);
         return taskContext;
@@ -288,6 +295,18 @@ public class QueryContext
         TaskContext taskContext = taskContexts.get(taskId);
         verify(taskContext != null, "task does not exist");
         return taskContext;
+    }
+
+    public QueryId getQueryId()
+    {
+        return queryId;
+    }
+
+    public synchronized void setMemoryLimits(DataSize queryMaxTaskMemory, DataSize queryMaxTotalTaskMemory)
+    {
+        // Don't allow session properties to increase memory beyond configured limits
+        maxUserMemory = Math.min(maxUserMemory, queryMaxTaskMemory.toBytes());
+        maxTotalMemory = Math.min(maxTotalMemory, queryMaxTotalTaskMemory.toBytes());
     }
 
     private static class QueryMemoryReservationHandler

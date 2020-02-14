@@ -15,11 +15,8 @@ package com.facebook.presto.raptor.filesystem;
 
 import com.facebook.presto.cache.CacheConfig;
 import com.facebook.presto.cache.CacheManager;
-import com.facebook.presto.cache.CacheStats;
 import com.facebook.presto.cache.CachingFileSystem;
 import com.facebook.presto.cache.ForCachingFileSystem;
-import com.facebook.presto.cache.LocalRangeCacheManager;
-import com.facebook.presto.cache.NoOpCacheManager;
 import com.facebook.presto.hadoop.FileSystemFactory;
 import com.facebook.presto.spi.PrestoException;
 import org.apache.hadoop.conf.Configuration;
@@ -31,13 +28,11 @@ import javax.inject.Inject;
 
 import java.io.IOException;
 import java.net.URI;
-import java.util.Map;
 import java.util.function.BiFunction;
 
-import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.raptor.filesystem.FileSystemUtil.copy;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.Executors.newScheduledThreadPool;
 
 public class RaptorCachingHdfsConfiguration
         implements RaptorHdfsConfiguration
@@ -50,19 +45,11 @@ public class RaptorCachingHdfsConfiguration
     public RaptorCachingHdfsConfiguration(
             @ForCachingFileSystem RaptorHdfsConfiguration hiveHdfsConfiguration,
             CacheConfig cacheConfig,
-            CacheStats cacheStats)
+            CacheManager cacheManager)
     {
         this.hiveHdfsConfiguration = requireNonNull(hiveHdfsConfiguration, "hiveHdfsConfiguration is null");
-
-        CacheConfig config = requireNonNull(cacheConfig, "cachingFileSystemConfig is null");
-        this.cacheManager = config.getBaseDirectory() == null ?
-                new NoOpCacheManager() :
-                new LocalRangeCacheManager(
-                        cacheConfig,
-                        cacheStats,
-                        newScheduledThreadPool(5, daemonThreadsNamed("raptor-cache-flusher-%s")),
-                        newScheduledThreadPool(1, daemonThreadsNamed("raptor-cache-remover-%s")));
-        this.cacheValidationEnabled = cacheConfig.isValidationEnabled();
+        this.cacheManager = requireNonNull(cacheManager, "CacheManager is null");
+        this.cacheValidationEnabled = requireNonNull(cacheConfig, "cacheConfig is null").isValidationEnabled();
     }
 
     @Override
@@ -75,7 +62,7 @@ public class RaptorCachingHdfsConfiguration
                         factoryUri,
                         factoryConfig,
                         cacheManager,
-                        (new Path(uri)).getFileSystem(hiveHdfsConfiguration.getConfiguration(context, uri)),
+                        (new Path(factoryUri)).getFileSystem(hiveHdfsConfiguration.getConfiguration(context, factoryUri)),
                         cacheValidationEnabled);
             }
             catch (IOException e) {
@@ -86,13 +73,6 @@ public class RaptorCachingHdfsConfiguration
 
         copy(defaultConfig, config);
         return config;
-    }
-
-    private static void copy(Configuration from, Configuration to)
-    {
-        for (Map.Entry<String, String> entry : from) {
-            to.set(entry.getKey(), entry.getValue());
-        }
     }
 
     private static class CachingJobConf

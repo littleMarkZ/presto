@@ -13,43 +13,43 @@
  */
 package com.facebook.presto.raptor.filesystem;
 
-import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
 import com.facebook.presto.cache.CacheConfig;
+import com.facebook.presto.cache.CacheManager;
 import com.facebook.presto.cache.CacheStats;
 import com.facebook.presto.cache.ForCachingFileSystem;
+import com.facebook.presto.cache.LocalRangeCacheManager;
+import com.facebook.presto.cache.NoOpCacheManager;
 import com.facebook.presto.raptor.storage.OrcDataEnvironment;
 import com.facebook.presto.raptor.storage.StorageManagerConfig;
 import com.facebook.presto.raptor.storage.StorageService;
 import com.google.inject.Binder;
+import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import org.apache.hadoop.fs.Path;
 
 import javax.inject.Singleton;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class HdfsModule
-        extends AbstractConfigurationAwareModule
+        implements Module
 {
     @Override
-    public void setup(Binder binder)
+    public void configure(Binder binder)
     {
         configBinder(binder).bindConfig(StorageManagerConfig.class);
         configBinder(binder).bindConfig(RaptorHdfsConfig.class);
 
-        CacheConfig cacheConfig = buildConfigObject(CacheConfig.class);
-        if (cacheConfig.getBaseDirectory() != null) {
-            binder.bind(CacheStats.class).in(Scopes.SINGLETON);
-            newExporter(binder).export(CacheStats.class).withGeneratedName();
+        configBinder(binder).bindConfig(CacheConfig.class);
+        binder.bind(CacheStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(CacheStats.class).withGeneratedName();
 
-            binder.bind(RaptorHdfsConfiguration.class).annotatedWith(ForCachingFileSystem.class).to(RaptorHiveHdfsConfiguration.class).in(Scopes.SINGLETON);
-            binder.bind(RaptorHdfsConfiguration.class).to(RaptorCachingHdfsConfiguration.class).in(Scopes.SINGLETON);
-        }
-        else {
-            binder.bind(RaptorHdfsConfiguration.class).to(RaptorHiveHdfsConfiguration.class).in(Scopes.SINGLETON);
-        }
+        binder.bind(RaptorHdfsConfiguration.class).annotatedWith(ForCachingFileSystem.class).to(RaptorHiveHdfsConfiguration.class).in(Scopes.SINGLETON);
+        binder.bind(RaptorHdfsConfiguration.class).to(RaptorCachingHdfsConfiguration.class).in(Scopes.SINGLETON);
 
         binder.bind(StorageService.class).to(HdfsStorageService.class).in(Scopes.SINGLETON);
         binder.bind(OrcDataEnvironment.class).to(HdfsOrcDataEnvironment.class).in(Scopes.SINGLETON);
@@ -60,5 +60,18 @@ public class HdfsModule
     public Path createBaseLocation(StorageManagerConfig config)
     {
         return new Path(config.getDataDirectory());
+    }
+
+    @Singleton
+    @Provides
+    public CacheManager createCacheManager(CacheConfig cacheConfig, CacheStats cacheStats)
+    {
+        return cacheConfig.getBaseDirectory() == null ?
+                new NoOpCacheManager() :
+                new LocalRangeCacheManager(
+                        cacheConfig,
+                        cacheStats,
+                        newScheduledThreadPool(5, daemonThreadsNamed("raptor-cache-flusher-%s")),
+                        newScheduledThreadPool(1, daemonThreadsNamed("raptor-cache-remover-%s")));
     }
 }

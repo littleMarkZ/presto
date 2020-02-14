@@ -13,8 +13,10 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.hive.metastore.Table;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathFilter;
 
 import java.util.Iterator;
 
@@ -22,5 +24,5 @@ import static com.facebook.presto.hive.util.HiveFileIterator.NestedDirectoryPoli
 
 public interface DirectoryLister
 {
-    Iterator<HiveFileInfo> list(FileSystem fileSystem, Path path, NamenodeStats namenodeStats, NestedDirectoryPolicy nestedDirectoryPolicy);
+    Iterator<HiveFileInfo> list(FileSystem fileSystem, Table table, Path path, NamenodeStats namenodeStats, NestedDirectoryPolicy nestedDirectoryPolicy, PathFilter pathFilter);
 }

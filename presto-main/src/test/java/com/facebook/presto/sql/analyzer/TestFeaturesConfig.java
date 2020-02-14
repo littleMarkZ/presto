@@ -18,6 +18,7 @@ import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.facebook.presto.operator.aggregation.arrayagg.ArrayAggGroupImplementation;
 import com.facebook.presto.operator.aggregation.histogram.HistogramGroupImplementation;
 import com.facebook.presto.operator.aggregation.multimapagg.MultimapAggGroupImplementation;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.PartitioningPrecisionStrategy;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -27,6 +28,8 @@ import java.util.Map;
 
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationPartitioningMergingStrategy.LEGACY;
+import static com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationPartitioningMergingStrategy.TOP_DOWN;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType.BROADCAST;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType.PARTITIONED;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinReorderingStrategy.ELIMINATE_CROSS_JOINS;
@@ -59,6 +62,7 @@ public class TestFeaturesConfig
                 .setDynamicScheduleForGroupedExecutionEnabled(false)
                 .setRecoverableGroupedExecutionEnabled(false)
                 .setMaxFailedTaskPercentage(0.3)
+                .setMaxStageRetries(0)
                 .setConcurrentLifespansPerTask(0)
                 .setFastInequalityJoins(true)
                 .setColocatedJoinsEnabled(false)
@@ -73,6 +77,7 @@ public class TestFeaturesConfig
                 .setOptimizeHashGeneration(true)
                 .setPushTableWriteThroughUnion(true)
                 .setDictionaryAggregation(false)
+                .setAggregationPartitioningMergingStrategy(LEGACY)
                 .setLegacyArrayAgg(false)
                 .setGroupByUsesEqualTo(false)
                 .setLegacyMapSubscript(false)
@@ -122,7 +127,10 @@ public class TestFeaturesConfig
                 .setOptimizeFullOuterJoinWithCoalesce(true)
                 .setIndexLoaderTimeout(new Duration(20, SECONDS))
                 .setOptimizedRepartitioningEnabled(false)
-                .setListNonBuiltInFunctions(false));
+                .setListBuiltInFunctionsOnly(true)
+                .setPartitioningPrecisionStrategy(PartitioningPrecisionStrategy.AUTOMATIC)
+                .setExperimentalFunctionsEnabled(false)
+                .setUseLegacyScheduler(false));
     }
 
     @Test
@@ -152,6 +160,7 @@ public class TestFeaturesConfig
                 .put("dynamic-schedule-for-grouped-execution", "true")
                 .put("recoverable-grouped-execution-enabled", "true")
                 .put("max-failed-task-percentage", "0.8")
+                .put("max-stage-retries", "10")
                 .put("concurrent-lifespans-per-task", "1")
                 .put("fast-inequality-joins", "false")
                 .put("colocated-joins-enabled", "true")
@@ -168,6 +177,7 @@ public class TestFeaturesConfig
                 .put("optimizer.push-table-write-through-union", "false")
                 .put("optimizer.dictionary-aggregation", "true")
                 .put("optimizer.push-aggregation-through-join", "false")
+                .put("optimizer.aggregation-partition-merging", "top_down")
                 .put("regex-library", "RE2J")
                 .put("re2j.dfa-states-limit", "42")
                 .put("re2j.dfa-retries", "42")
@@ -203,7 +213,10 @@ public class TestFeaturesConfig
                 .put("optimizer.optimize-full-outer-join-with-coalesce", "false")
                 .put("index-loader-timeout", "10s")
                 .put("experimental.optimized-repartitioning", "true")
-                .put("list-non-built-in-functions", "true")
+                .put("list-built-in-functions-only", "false")
+                .put("partitioning-precision-strategy", "PREFER_EXACT_PARTITIONING")
+                .put("experimental-functions-enabled", "true")
+                .put("use-legacy-scheduler", "true")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -223,6 +236,7 @@ public class TestFeaturesConfig
                 .setDynamicScheduleForGroupedExecutionEnabled(true)
                 .setRecoverableGroupedExecutionEnabled(true)
                 .setMaxFailedTaskPercentage(0.8)
+                .setMaxStageRetries(10)
                 .setConcurrentLifespansPerTask(1)
                 .setFastInequalityJoins(false)
                 .setColocatedJoinsEnabled(true)
@@ -238,6 +252,7 @@ public class TestFeaturesConfig
                 .setOptimizeMixedDistinctAggregations(true)
                 .setPushTableWriteThroughUnion(false)
                 .setDictionaryAggregation(true)
+                .setAggregationPartitioningMergingStrategy(TOP_DOWN)
                 .setPushAggregationThroughJoin(false)
                 .setLegacyArrayAgg(true)
                 .setGroupByUsesEqualTo(true)
@@ -281,7 +296,10 @@ public class TestFeaturesConfig
                 .setOptimizeFullOuterJoinWithCoalesce(false)
                 .setIndexLoaderTimeout(new Duration(10, SECONDS))
                 .setOptimizedRepartitioningEnabled(true)
-                .setListNonBuiltInFunctions(true);
+                .setListBuiltInFunctionsOnly(false)
+                .setPartitioningPrecisionStrategy(PartitioningPrecisionStrategy.PREFER_EXACT_PARTITIONING)
+                .setExperimentalFunctionsEnabled(true)
+                .setUseLegacyScheduler(true);
         assertFullMapping(properties, expected);
     }
 

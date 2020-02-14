@@ -122,7 +122,11 @@ public class TestHiveClientConfig
                 .setTemporaryTableCompressionCodec(SNAPPY)
                 .setPushdownFilterEnabled(false)
                 .setZstdJniDecompressionEnabled(false)
-                .setRangeFiltersOnSubscriptsEnabled(false));
+                .setRangeFiltersOnSubscriptsEnabled(false)
+                .setAdaptiveFilterReorderingEnabled(true)
+                .setFileStatusCacheExpireAfterWrite(new Duration(0, TimeUnit.SECONDS))
+                .setFileStatusCacheMaxSize(0)
+                .setFileStatusCacheTables(""));
     }
 
     @Test
@@ -209,7 +213,11 @@ public class TestHiveClientConfig
                 .put("hive.temporary-table-compression-codec", "NONE")
                 .put("hive.pushdown-filter-enabled", "true")
                 .put("hive.range-filters-on-subscripts-enabled", "true")
+                .put("hive.adaptive-filter-reordering-enabled", "false")
                 .put("hive.zstd-jni-decompression-enabled", "true")
+                .put("hive.file-status-cache-tables", "foo.bar1, foo.bar2")
+                .put("hive.file-status-cache-size", "1000")
+                .put("hive.file-status-cache-expire-time", "30m")
                 .build();
 
         HiveClientConfig expected = new HiveClientConfig()
@@ -294,7 +302,11 @@ public class TestHiveClientConfig
                 .setTemporaryTableCompressionCodec(NONE)
                 .setPushdownFilterEnabled(true)
                 .setZstdJniDecompressionEnabled(true)
-                .setRangeFiltersOnSubscriptsEnabled(true);
+                .setRangeFiltersOnSubscriptsEnabled(true)
+                .setAdaptiveFilterReorderingEnabled(false)
+                .setFileStatusCacheTables("foo.bar1,foo.bar2")
+                .setFileStatusCacheMaxSize(1000)
+                .setFileStatusCacheExpireAfterWrite(new Duration(30, TimeUnit.MINUTES));
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

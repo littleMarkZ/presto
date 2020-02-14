@@ -16,10 +16,17 @@ package com.facebook.presto.hive;
 import com.facebook.airlift.concurrent.BoundedExecutor;
 import com.facebook.airlift.concurrent.ExecutorServiceAdapter;
 import com.facebook.airlift.event.client.EventClient;
+import com.facebook.presto.cache.CacheConfig;
+import com.facebook.presto.cache.CacheManager;
+import com.facebook.presto.cache.CacheStats;
+import com.facebook.presto.cache.ForCachingFileSystem;
+import com.facebook.presto.cache.LocalRangeCacheManager;
+import com.facebook.presto.cache.NoOpCacheManager;
 import com.facebook.presto.hive.orc.DwrfBatchPageSourceFactory;
 import com.facebook.presto.hive.orc.DwrfSelectivePageSourceFactory;
 import com.facebook.presto.hive.orc.OrcBatchPageSourceFactory;
 import com.facebook.presto.hive.orc.OrcSelectivePageSourceFactory;
+import com.facebook.presto.hive.orc.TupleDomainFilterCache;
 import com.facebook.presto.hive.parquet.ParquetPageSourceFactory;
 import com.facebook.presto.hive.rcfile.RcFilePageSourceFactory;
 import com.facebook.presto.hive.rule.HivePlanOptimizerProvider;
@@ -67,6 +74,7 @@ import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static java.lang.Math.toIntExact;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newFixedThreadPool;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static org.weakref.jmx.ObjectNames.generatedNameOf;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
@@ -89,9 +97,6 @@ public class HiveClientModule
 
         binder.bind(HdfsConfigurationInitializer.class).in(Scopes.SINGLETON);
         newSetBinder(binder, DynamicConfigurationProvider.class);
-        binder.bind(HdfsConfiguration.class).to(HiveHdfsConfiguration.class).in(Scopes.SINGLETON);
-        binder.bind(HdfsEnvironment.class).in(Scopes.SINGLETON);
-        binder.bind(DirectoryLister.class).to(HadoopDirectoryLister.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(HiveClientConfig.class);
 
         binder.bind(HiveSessionProperties.class).in(Scopes.SINGLETON);
@@ -102,6 +107,11 @@ public class HiveClientModule
         newExporter(binder).export(NamenodeStats.class).as(generatedNameOf(NamenodeStats.class, connectorId));
 
         binder.bind(PrestoS3ClientFactory.class).in(Scopes.SINGLETON);
+
+        binder.bind(DirectoryLister.class).annotatedWith(ForCachingDirectoryLister.class).to(HadoopDirectoryLister.class).in(Scopes.SINGLETON);
+        binder.bind(DirectoryLister.class).to(CachingDirectoryLister.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(DirectoryLister.class)
+                .as(generatedNameOf(CachingDirectoryLister.class, connectorId));
 
         Multibinder<HiveRecordCursorProvider> recordCursorProviderBinder = newSetBinder(binder, HiveRecordCursorProvider.class);
         recordCursorProviderBinder.addBinding().to(S3SelectRecordCursorProvider.class).in(Scopes.SINGLETON);
@@ -140,7 +150,18 @@ public class HiveClientModule
 
         configBinder(binder).bindConfig(OrcCacheConfig.class, connectorId);
 
-        binder.bind(FileOpener.class).to(HadoopFileOpener.class).in(Scopes.SINGLETON);
+        binder.bind(TupleDomainFilterCache.class).in(Scopes.SINGLETON);
+
+        binder.bind(HdfsEnvironment.class).in(Scopes.SINGLETON);
+        binder.bind(HdfsConfiguration.class).annotatedWith(ForMetastoreHdfsEnvironment.class).to(HiveCachingHdfsConfiguration.class).in(Scopes.SINGLETON);
+        binder.bind(HdfsConfiguration.class).annotatedWith(ForCachingFileSystem.class).to(HiveHdfsConfiguration.class).in(Scopes.SINGLETON);
+
+        binder.bind(CacheStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(CacheStats.class).withGeneratedName();
+        configBinder(binder).bindConfig(CacheConfig.class);
+
+        binder.bind(FileOpener.class).to(CachingFileOpener.class).in(Scopes.SINGLETON);
+        binder.bind(FileOpener.class).annotatedWith(ForCachingFileOpener.class).to(HadoopFileOpener.class).in(Scopes.SINGLETON);
 
         Multibinder<HiveSelectivePageSourceFactory> selectivePageSourceFactoryBinder = newSetBinder(binder, HiveSelectivePageSourceFactory.class);
         selectivePageSourceFactoryBinder.addBinding().to(OrcSelectivePageSourceFactory.class).in(Scopes.SINGLETON);
@@ -243,5 +264,18 @@ public class HiveClientModule
             exporter.export(generatedNameOf(CacheStatsMBean.class, connectorId + "_StripeStream"), streamCacheStatsMBean);
         }
         return stripeMetadataSource;
+    }
+
+    @Singleton
+    @Provides
+    public CacheManager createCacheManager(CacheConfig cacheConfig, CacheStats cacheStats)
+    {
+        return cacheConfig.getBaseDirectory() == null ?
+                new NoOpCacheManager() :
+                new LocalRangeCacheManager(
+                        cacheConfig,
+                        cacheStats,
+                        newScheduledThreadPool(5, daemonThreadsNamed("hive-cache-flusher-%s")),
+                        newScheduledThreadPool(1, daemonThreadsNamed("hive-cache-remover-%s")));
     }
 }

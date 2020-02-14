@@ -24,6 +24,7 @@ import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.sql.SQLException;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -178,17 +179,17 @@ public class TestShardDao
 
         OptionalInt noBucket = OptionalInt.empty();
         OptionalLong noRange = OptionalLong.empty();
-        ShardMetadata shard1 = new ShardMetadata(plainTableId, shardId1, shardUuid1, noBucket, 1, 11, 111, OptionalLong.of(888_111), noRange, noRange);
-        ShardMetadata shard2 = new ShardMetadata(plainTableId, shardId2, shardUuid2, noBucket, 2, 22, 222, OptionalLong.of(888_222), noRange, noRange);
-        ShardMetadata shard3 = new ShardMetadata(bucketedTableId, shardId3, shardUuid3, OptionalInt.of(8), 3, 33, 333, OptionalLong.of(888_333), noRange, noRange);
-        ShardMetadata shard4 = new ShardMetadata(bucketedTableId, shardId4, shardUuid4, OptionalInt.of(9), 4, 44, 444, OptionalLong.of(888_444), noRange, noRange);
-        ShardMetadata shard5 = new ShardMetadata(bucketedTableId, shardId5, shardUuid5, OptionalInt.of(7), 5, 55, 555, OptionalLong.of(888_555), noRange, noRange);
+        ShardMetadata shard1 = new ShardMetadata(plainTableId, shardId1, shardUuid1, false, Optional.empty(), noBucket, 1, 11, 111, OptionalLong.of(888_111), noRange, noRange);
+        ShardMetadata shard2 = new ShardMetadata(plainTableId, shardId2, shardUuid2, false, Optional.empty(), noBucket, 2, 22, 222, OptionalLong.of(888_222), noRange, noRange);
+        ShardMetadata shard3 = new ShardMetadata(bucketedTableId, shardId3, shardUuid3, false, Optional.empty(), OptionalInt.of(8), 3, 33, 333, OptionalLong.of(888_333), noRange, noRange);
+        ShardMetadata shard4 = new ShardMetadata(bucketedTableId, shardId4, shardUuid4, false, Optional.empty(), OptionalInt.of(9), 4, 44, 444, OptionalLong.of(888_444), noRange, noRange);
+        ShardMetadata shard5 = new ShardMetadata(bucketedTableId, shardId5, shardUuid5, false, Optional.empty(), OptionalInt.of(7), 5, 55, 555, OptionalLong.of(888_555), noRange, noRange);
 
         assertEquals(dao.getShards(plainTableId), ImmutableSet.of(shardUuid1, shardUuid2));
         assertEquals(dao.getShards(bucketedTableId), ImmutableSet.of(shardUuid3, shardUuid4, shardUuid5));
 
-        assertEquals(dao.getNodeShards(nodeName1, null), ImmutableSet.of(shard3));
-        assertEquals(dao.getNodeShards(nodeName2, null), ImmutableSet.of(shard4, shard5));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName1, null), ImmutableSet.of(shard3));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName2, null), ImmutableSet.of(shard4, shard5));
         assertEquals(dao.getNodeSizes(), ImmutableSet.of(
                 new NodeSize(nodeName1, 33),
                 new NodeSize(nodeName2, 44 + 55)));
@@ -197,16 +198,16 @@ public class TestShardDao
         dao.insertShardNode(shardId2, nodeId1);
         dao.insertShardNode(shardId1, nodeId2);
 
-        assertEquals(dao.getNodeShards(nodeName1, null), ImmutableSet.of(shard1, shard2, shard3));
-        assertEquals(dao.getNodeShards(nodeName2, null), ImmutableSet.of(shard1, shard4, shard5));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName1, null), ImmutableSet.of(shard1, shard2, shard3));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName2, null), ImmutableSet.of(shard1, shard4, shard5));
         assertEquals(dao.getNodeSizes(), ImmutableSet.of(
                 new NodeSize(nodeName1, 11 + 22 + 33),
                 new NodeSize(nodeName2, 11 + 44 + 55)));
 
         dao.dropShardNodes(plainTableId);
 
-        assertEquals(dao.getNodeShards(nodeName1, null), ImmutableSet.of(shard3));
-        assertEquals(dao.getNodeShards(nodeName2, null), ImmutableSet.of(shard4, shard5));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName1, null), ImmutableSet.of(shard3));
+        assertEquals(dao.getNodeShardsAndDeltas(nodeName2, null), ImmutableSet.of(shard4, shard5));
         assertEquals(dao.getNodeSizes(), ImmutableSet.of(
                 new NodeSize(nodeName1, 33),
                 new NodeSize(nodeName2, 44 + 55)));

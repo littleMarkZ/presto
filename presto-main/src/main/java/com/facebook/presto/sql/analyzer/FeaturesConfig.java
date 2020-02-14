@@ -36,6 +36,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 
+import static com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationPartitioningMergingStrategy.LEGACY;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType.PARTITIONED;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinReorderingStrategy.ELIMINATE_CROSS_JOINS;
 import static com.facebook.presto.sql.analyzer.RegexLibrary.JONI;
@@ -72,6 +73,7 @@ public class FeaturesConfig
     private boolean dynamicScheduleForGroupedExecution;
     private boolean recoverableGroupedExecutionEnabled;
     private double maxFailedTaskPercentage = 0.3;
+    private int maxStageRetries;
     private int concurrentLifespansPerTask;
     private boolean spatialJoinsEnabled = true;
     private boolean fastInequalityJoins = true;
@@ -132,6 +134,7 @@ public class FeaturesConfig
     private int filterAndProjectMinOutputPageRowCount = 256;
     private int maxGroupingSets = 2048;
     private boolean legacyUnnestArrayRows;
+    private AggregationPartitioningMergingStrategy aggregationPartitioningMergingStrategy = LEGACY;
 
     private boolean jsonSerdeCodeGenerationEnabled;
     private int maxConcurrentMaterializations = 3;
@@ -143,7 +146,19 @@ public class FeaturesConfig
 
     private Duration indexLoaderTimeout = new Duration(20, SECONDS);
 
-    private boolean listNonBuiltInFunctions;
+    private boolean listBuiltInFunctionsOnly = true;
+    private boolean experimentalFunctionsEnabled;
+    private boolean useLegacyScheduler;
+
+    private PartitioningPrecisionStrategy partitioningPrecisionStrategy = PartitioningPrecisionStrategy.AUTOMATIC;
+
+    public enum PartitioningPrecisionStrategy
+    {
+        // Let Presto decide when to repartition
+        AUTOMATIC,
+        // Use exact partitioning until Presto becomes smarter WRT to picking when to repartition
+        PREFER_EXACT_PARTITIONING
+    }
 
     public enum JoinReorderingStrategy
     {
@@ -173,6 +188,23 @@ public class FeaturesConfig
     {
         NONE,
         PUSH_THROUGH_LOW_MEMORY_OPERATORS
+    }
+
+    public enum AggregationPartitioningMergingStrategy
+    {
+        LEGACY, // merge partition preference with parent but apply current partition preference
+        TOP_DOWN, // merge partition preference with parent and apply the merged partition preference
+        BOTTOM_UP; // don't merge partition preference and apply current partition preference only
+
+        public boolean isMergingWithParent()
+        {
+            return this == LEGACY || this == TOP_DOWN;
+        }
+
+        public boolean isAdoptingMergedPreference()
+        {
+            return this == TOP_DOWN;
+        }
     }
 
     public double getCpuCostWeight()
@@ -396,6 +428,19 @@ public class FeaturesConfig
         return this;
     }
 
+    public int getMaxStageRetries()
+    {
+        return maxStageRetries;
+    }
+
+    @Config("max-stage-retries")
+    @ConfigDescription("Maximum number of times that stages can be retried")
+    public FeaturesConfig setMaxStageRetries(int maxStageRetries)
+    {
+        this.maxStageRetries = maxStageRetries;
+        return this;
+    }
+
     public int getConcurrentLifespansPerTask()
     {
         return concurrentLifespansPerTask;
@@ -486,6 +531,18 @@ public class FeaturesConfig
     public FeaturesConfig setMaxReorderedJoins(int maxReorderedJoins)
     {
         this.maxReorderedJoins = maxReorderedJoins;
+        return this;
+    }
+
+    public AggregationPartitioningMergingStrategy getAggregationPartitioningMergingStrategy()
+    {
+        return aggregationPartitioningMergingStrategy;
+    }
+
+    @Config("optimizer.aggregation-partition-merging")
+    public FeaturesConfig setAggregationPartitioningMergingStrategy(AggregationPartitioningMergingStrategy aggregationPartitioningMergingStrategy)
+    {
+        this.aggregationPartitioningMergingStrategy = requireNonNull(aggregationPartitioningMergingStrategy, "aggregationPartitioningMergingStrategy is null");
         return this;
     }
 
@@ -1104,15 +1161,53 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isListNonBuiltInFunctions()
+    public boolean isListBuiltInFunctionsOnly()
     {
-        return listNonBuiltInFunctions;
+        return listBuiltInFunctionsOnly;
     }
 
-    @Config("list-non-built-in-functions")
-    public FeaturesConfig setListNonBuiltInFunctions(boolean listNonBuiltInFunctions)
+    @Config("list-built-in-functions-only")
+    public FeaturesConfig setListBuiltInFunctionsOnly(boolean listBuiltInFunctionsOnly)
     {
-        this.listNonBuiltInFunctions = listNonBuiltInFunctions;
+        this.listBuiltInFunctionsOnly = listBuiltInFunctionsOnly;
+        return this;
+    }
+
+    public PartitioningPrecisionStrategy getPartitioningPrecisionStrategy()
+    {
+        return partitioningPrecisionStrategy;
+    }
+
+    @Config("partitioning-precision-strategy")
+    @ConfigDescription("Set strategy used to determine whether to repartition (AUTOMATIC, PREFER_EXACT)")
+    public FeaturesConfig setPartitioningPrecisionStrategy(PartitioningPrecisionStrategy partitioningPrecisionStrategy)
+    {
+        this.partitioningPrecisionStrategy = partitioningPrecisionStrategy;
+        return this;
+    }
+
+    public boolean isExperimentalFunctionsEnabled()
+    {
+        return experimentalFunctionsEnabled;
+    }
+
+    @Config("experimental-functions-enabled")
+    public FeaturesConfig setExperimentalFunctionsEnabled(boolean experimentalFunctionsEnabled)
+    {
+        this.experimentalFunctionsEnabled = experimentalFunctionsEnabled;
+        return this;
+    }
+
+    public boolean isUseLegacyScheduler()
+    {
+        return useLegacyScheduler;
+    }
+
+    @Config("use-legacy-scheduler")
+    @ConfigDescription("Use the version of the scheduler before refactorings for section retries")
+    public FeaturesConfig setUseLegacyScheduler(boolean useLegacyScheduler)
+    {
+        this.useLegacyScheduler = useLegacyScheduler;
         return this;
     }
 }

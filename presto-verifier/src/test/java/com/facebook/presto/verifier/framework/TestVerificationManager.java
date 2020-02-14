@@ -14,7 +14,6 @@
 package com.facebook.presto.verifier.framework;
 
 import com.facebook.airlift.event.client.AbstractEventClient;
-import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.jdbc.QueryStats;
 import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.sql.parser.SqlParser;
@@ -22,13 +21,9 @@ import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.type.TypeRegistry;
-import com.facebook.presto.verifier.checksum.ChecksumValidator;
-import com.facebook.presto.verifier.checksum.FloatingPointColumnValidator;
-import com.facebook.presto.verifier.checksum.OrderableArrayColumnValidator;
-import com.facebook.presto.verifier.checksum.SimpleColumnValidator;
 import com.facebook.presto.verifier.event.VerifierQueryEvent;
+import com.facebook.presto.verifier.prestoaction.NodeResourceClient;
 import com.facebook.presto.verifier.prestoaction.PrestoAction;
-import com.facebook.presto.verifier.prestoaction.PrestoResourceClient;
 import com.facebook.presto.verifier.resolver.FailureResolverConfig;
 import com.facebook.presto.verifier.resolver.FailureResolverManagerFactory;
 import com.facebook.presto.verifier.rewrite.QueryRewriter;
@@ -46,6 +41,7 @@ import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_PARTITION_DROPPED
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
+import static com.facebook.presto.verifier.VerifierTestUtil.createChecksumValidator;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SKIPPED;
 import static com.facebook.presto.verifier.framework.ClusterType.CONTROL;
 import static com.facebook.presto.verifier.framework.ClusterType.TEST;
@@ -84,11 +80,11 @@ public class TestVerificationManager
         }
     }
 
-    private static class MockPrestoResourceClient
-            implements PrestoResourceClient
+    private static class MockNodeResourceClient
+            implements NodeResourceClient
     {
         @Override
-        public <V> V getJsonResponse(String path, JsonCodec<V> responseCodec)
+        public int getClusterSize(String path)
         {
             throw new UnsupportedOperationException();
         }
@@ -210,8 +206,8 @@ public class TestVerificationManager
                         (sourceQuery, verificationContext) -> prestoAction,
                         presto -> new QueryRewriter(SQL_PARSER, presto, ImmutableList.of(), ImmutableMap.of(CONTROL, TABLE_PREFIX, TEST, TABLE_PREFIX)),
                         new FailureResolverManagerFactory(ImmutableList.of(), new FailureResolverConfig().setEnabled(false)),
-                        new MockPrestoResourceClient(),
-                        new ChecksumValidator(new SimpleColumnValidator(), new FloatingPointColumnValidator(verifierConfig), new OrderableArrayColumnValidator()),
+                        new MockNodeResourceClient(),
+                        createChecksumValidator(verifierConfig),
                         verifierConfig,
                         new TypeRegistry(),
                         new FailureResolverConfig().setEnabled(false)),

@@ -26,6 +26,7 @@ import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.TableNotFoundException;
+import com.facebook.presto.spi.predicate.Domain;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.PrincipalType;
 import com.facebook.presto.spi.security.RoleGrant;
@@ -58,7 +59,6 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
 
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.presto.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_NEW_DIRECTORY;
@@ -69,6 +69,7 @@ import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_PATH_ALREADY_EXIS
 import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_TABLE_DROPPED_DURING_QUERY;
 import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_QUERY_ID_NAME;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.convertPredicateToParts;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.getFileSystem;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.isPrestoView;
@@ -94,6 +95,7 @@ import static com.google.common.util.concurrent.Futures.whenAllSucceed;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.common.FileUtils.makePartName;
 
 public class SemiTransactionalHiveMetastore
@@ -512,16 +514,19 @@ public class SemiTransactionalHiveMetastore
 
     public synchronized Optional<List<String>> getPartitionNames(String databaseName, String tableName)
     {
-        return doGetPartitionNames(databaseName, tableName, Optional.empty());
+        return doGetPartitionNames(databaseName, tableName, ImmutableMap.of());
     }
 
-    public synchronized Optional<List<String>> getPartitionNamesByParts(String databaseName, String tableName, List<String> parts)
+    public synchronized Optional<List<String>> getPartitionNamesByFilter(String databaseName, String tableName, Map<Column, Domain> effectivePredicate)
     {
-        return doGetPartitionNames(databaseName, tableName, Optional.of(parts));
+        return doGetPartitionNames(databaseName, tableName, effectivePredicate);
     }
 
     @GuardedBy("this")
-    private Optional<List<String>> doGetPartitionNames(String databaseName, String tableName, Optional<List<String>> parts)
+    private Optional<List<String>> doGetPartitionNames(
+            String databaseName,
+            String tableName,
+            Map<Column, Domain> partitionPredicates)
     {
         checkHoldsLock();
 
@@ -538,8 +543,9 @@ public class SemiTransactionalHiveMetastore
                 break;
             case PRE_EXISTING_TABLE: {
                 Optional<List<String>> partitionNameResult;
-                if (parts.isPresent()) {
-                    partitionNameResult = delegate.getPartitionNamesByParts(databaseName, tableName, parts.get());
+                List<Column> partitionColumns = table.get().getPartitionColumns();
+                if (!partitionPredicates.isEmpty()) {
+                    partitionNameResult = Optional.of(delegate.getPartitionNamesByFilter(databaseName, tableName, partitionPredicates));
                 }
                 else {
                     partitionNameResult = delegate.getPartitionNames(databaseName, tableName);
@@ -579,12 +585,14 @@ public class SemiTransactionalHiveMetastore
         }
         // add newly-added partitions to the results from underlying metastore
         if (!partitionActionsOfTable.isEmpty()) {
-            List<String> columnNames = table.get().getPartitionColumns().stream().map(Column::getName).collect(Collectors.toList());
+            List<Column> partitionColumns = table.get().getPartitionColumns();
+            List<String> partitionColumnNames = partitionColumns.stream().map(Column::getName).collect(toList());
+            List<String> parts = convertPredicateToParts(partitionPredicates);
             for (Action<PartitionAndMore> partitionAction : partitionActionsOfTable.values()) {
                 if (partitionAction.getType() == ActionType.ADD) {
                     List<String> values = partitionAction.getData().getPartition().getValues();
-                    if (!parts.isPresent() || partitionValuesMatch(values, parts.get())) {
-                        resultBuilder.add(makePartName(columnNames, values));
+                    if (parts.isEmpty() || partitionValuesMatch(values, parts)) {
+                        resultBuilder.add(makePartName(partitionColumnNames, values));
                     }
                 }
             }
@@ -1032,7 +1040,9 @@ public class SemiTransactionalHiveMetastore
             // The next section will deal with "dropping table/partition". Commit may still fail in
             // this section. Even if commit fails, cleanups, instead of rollbacks, will be executed.
 
-            committer.executeIrreversibleMetastoreOperations();
+            if (!committer.metastoreDeleteOperations.isEmpty()) {
+                committer.executeMetastoreDeleteOperations();
+            }
 
             // If control flow reached this point, this commit is considered successful no matter
             // what happens later. The only kind of operations that haven't been carried out yet
@@ -1472,18 +1482,22 @@ public class SemiTransactionalHiveMetastore
             }
         }
 
-        private void executeIrreversibleMetastoreOperations()
+        private void executeMetastoreDeleteOperations()
         {
-            List<String> failedIrreversibleOperationDescriptions = new ArrayList<>();
+            List<String> failedDeletionDescriptions = new ArrayList<>();
             List<Throwable> suppressedExceptions = new ArrayList<>();
             boolean anySucceeded = false;
-            for (IrreversibleMetastoreOperation irreversibleMetastoreOperation : metastoreDeleteOperations) {
+            for (IrreversibleMetastoreOperation deleteOperation : metastoreDeleteOperations) {
                 try {
-                    irreversibleMetastoreOperation.run();
+                    deleteOperation.run();
                     anySucceeded = true;
                 }
                 catch (Throwable t) {
-                    failedIrreversibleOperationDescriptions.add(irreversibleMetastoreOperation.getDescription());
+                    if (metastoreDeleteOperations.size() == 1 && t instanceof TableNotFoundException) {
+                        throw new PrestoException(HIVE_TABLE_DROPPED_DURING_QUERY,
+                                "The metastore delete operation failed: " + deleteOperation.getDescription());
+                    }
+                    failedDeletionDescriptions.add(deleteOperation.getDescription());
                     // A limit is needed to avoid having a huge exception object. 5 was chosen arbitrarily.
                     if (suppressedExceptions.size() < 5) {
                         suppressedExceptions.add(t);
@@ -1498,7 +1512,7 @@ public class SemiTransactionalHiveMetastore
                 else {
                     message.append("The transaction didn't commit cleanly. All operations other than the following delete operations were completed: ");
                 }
-                Joiner.on("; ").appendTo(message, failedIrreversibleOperationDescriptions);
+                Joiner.on("; ").appendTo(message, failedDeletionDescriptions);
 
                 PrestoException prestoException = new PrestoException(HIVE_METASTORE_ERROR, message.toString());
                 suppressedExceptions.forEach(prestoException::addSuppressed);

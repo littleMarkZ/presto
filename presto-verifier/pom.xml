@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.231-SNAPSHOT</version>
+        <version>0.233-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-verifier</artifactId>
@@ -14,12 +14,19 @@
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <main-class>com.facebook.presto.verifier.PrestoVerifier</main-class>
+        <process-name>${project.artifactId}</process-name>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>com.facebook.presto</groupId>
             <artifactId>presto-base-jdbc</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -27,8 +34,8 @@
             <artifactId>presto-hive</artifactId>
             <exclusions>
                 <exclusion>
-                    <groupId>com.facebook.presto.hive</groupId>
-                    <artifactId>hive-apache</artifactId>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -38,8 +45,8 @@
             <artifactId>presto-hive-metastore</artifactId>
             <exclusions>
                 <exclusion>
-                    <groupId>com.facebook.presto.hive</groupId>
-                    <artifactId>hive-apache</artifactId>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -67,6 +74,12 @@
         <dependency>
             <groupId>com.facebook.presto</groupId>
             <artifactId>presto-thrift-connector</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -228,6 +241,25 @@
             <artifactId>testng</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- for assembly -->
+        <dependency>
+            <groupId>com.facebook.airlift</groupId>
+            <artifactId>launcher</artifactId>
+            <version>${dep.packaging.version}</version>
+            <classifier>bin</classifier>
+            <type>tar.gz</type>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.facebook.airlift</groupId>
+            <artifactId>launcher</artifactId>
+            <version>${dep.packaging.version}</version>
+            <classifier>properties</classifier>
+            <type>tar.gz</type>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -270,6 +302,50 @@
                         <goals>
                             <goal>really-executable-jar</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>unpack-launcher</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>unpack-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <skip>false</skip>
+                            <includeArtifactIds>launcher</includeArtifactIds>
+                            <includeScope>provided</includeScope>
+                            <outputDirectory>${project.build.directory}/dependency/launcher</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>bin</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <formats>
+                                <format>tar.gz</format>
+                            </formats>
+                            <descriptors>
+                                <descriptor>src/main/assembly/presto-verifier.xml</descriptor>
+                            </descriptors>
+                            <finalName>presto-verifier-${project.version}</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
